@@ -7,12 +7,16 @@ def find_and_fix_empty_point_cloud():
     print("Starting RealSense point cloud debugging...")
     
     # Initialize RealSense pipeline
-    pipeline = rs.pipeline()
-    config = rs.config()
-    
-    # Enable both depth and color streams
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    try:
+        pipeline = rs.pipeline()
+        config = rs.config()
+        
+        # Enable both depth and color streams
+        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 60)
+        # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    except Exception as e:
+        print(e)
+        return
     
     # Start streaming (with error checking)
     try:
@@ -21,9 +25,6 @@ def find_and_fix_empty_point_cloud():
     except Exception as e:
         print(f"❌ Failed to start pipeline: {e}")
         return
-    
-    # Setup alignment to make sure depth and color images match
-    align = rs.align(rs.stream.color)
     
     # Get depth scale for distance calculation
     depth_sensor = pipeline_profile.get_device().first_depth_sensor()
@@ -77,43 +78,24 @@ def find_and_fix_empty_point_cloud():
                 continue
             
             # Generate point cloud (with proper setup)
-            print(time.time() - start)
-            start = time.time()
-
             points = pc.calculate(depth_frame)
 
-            print(time.time() - start)
-            start = time.time()
-            
             # Get vertices and check
-            vertices = np.asarray(points.get_vertices()).view(np.float16).reshape(-1, 3)
-                
-            # If we got here, we have valid points!
-            print(f"✅ Found {len(vertices)} valid points!")
-
-            print(time.time() - start)
-
-            start = time.time()
+            vertices = np.asarray(points.get_vertices()).view(np.float32).reshape(-1, 3)
             
             # Set points in Open3D point cloud
             pcd.points = o3d.utility.Vector3dVector(vertices)
             
             # Set all points to white
             pcd.paint_uniform_color([1, 1, 1])
-
-            print(time.time() - start)
-
-            start = time.time()
             
             # Update visualization
             vis.update_geometry(pcd)
             vis.poll_events()
             vis.update_renderer()
 
-            print(time.time() - start)
-            print()
-                
-            time.sleep(0.05)  # Short delay between frames
+            # time.sleep(0.05)
+            # Short delay between frames
             
             frame_count += 1
             
