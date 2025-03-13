@@ -13,6 +13,13 @@ def find_and_fix_empty_point_cloud():
     # Enable both depth and color streams
     config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
     # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
+    pipeline = rs.pipeline()
+    config = rs.config()
+    
+    # Enable both depth and color streams
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 60)
+    # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
     
     # Start streaming (with error checking)
     try:
@@ -91,8 +98,6 @@ def find_and_fix_empty_point_cloud():
             vis.update_geometry(pcd)
             vis.poll_events()
             vis.update_renderer()
-
-            print(time.time() - start)
             
             
     except KeyboardInterrupt:
