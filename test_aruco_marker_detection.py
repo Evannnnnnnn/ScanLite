@@ -54,9 +54,6 @@ def detect_aruco_markers_with_distance():
     # Create the detector
     detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
     
-    # Marker size in meters (2.2 cm = 0.022 m)
-    marker_size = 0.022
-    
     print("Press 'q' to quit")
     
     while True:
