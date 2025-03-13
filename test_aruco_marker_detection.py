@@ -2,32 +2,45 @@ import cv2
 import numpy as np
 import math
 import constant
+import pyrealsense2 as rs
 
 def detect_aruco_markers_with_distance():
     # Initialize the webcam
-    cap = cv2.VideoCapture(0)
+    # Configure RealSense pipeline
+    pipeline = rs.pipeline()
+    config = rs.config()
     
-    # Check if the webcam is opened correctly
-    if not cap.isOpened():
-        print("Error: Could not open webcam.")
-        return
+    # Enable color stream
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
     
-    # Get camera matrix (intrinsic parameters)
-    # For accurate distance measurement, you should calibrate your camera
-    # and use the actual values. These are approximate values for a 640x480 webcam
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # Start streaming
+    profile = pipeline.start(config)
     
-    # Approximate focal length (can be calibrated for better accuracy)
-    # Typical webcam focal length is around 500-600 pixels for 640x480 resolution
-    focal_length = 550  # This is an approximate value
+    # Get the color sensor's intrinsics
+    color_stream = profile.get_stream(rs.stream.color)
+    intrinsics = color_stream.as_video_stream_profile().get_intrinsics()
     
-    # Camera matrix
+    # Extract camera matrix parameters from intrinsics
     camera_matrix = np.array([
-        [focal_length, 0, frame_width/2],
-        [0, focal_length, frame_height/2],
+        [intrinsics.fx, 0, intrinsics.ppx],
+        [0, intrinsics.fy, intrinsics.ppy],
         [0, 0, 1]
     ])
+    
+    # Extract distortion coefficients
+    # RealSense uses Brown-Conrady distortion model (same as OpenCV)
+    dist_coeffs = np.array([
+        intrinsics.coeffs[0],  # k1
+        intrinsics.coeffs[1],  # k2
+        intrinsics.coeffs[2],  # p1
+        intrinsics.coeffs[3],  # p2
+        intrinsics.coeffs[4]   # k3
+    ])
+    
+    print("Camera Matrix:")
+    print(camera_matrix)
+    print("\nDistortion Coefficients:")
+    print(dist_coeffs)
     
     # Distortion coefficients (assume no distortion for simplicity)
     dist_coeffs = np.zeros((5, 1))
@@ -48,17 +61,20 @@ def detect_aruco_markers_with_distance():
     
     while True:
         # Read a frame from the webcam
-        ret, frame = cap.read()
+        frames = pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
         
-        if not ret:
-            print("Error: Failed to capture frame.")
-            break
+        if not color_frame:
+            continue
+        
+        # Convert RealSense frame to OpenCV format
+        frame = np.asanyarray(color_frame.get_data())
         
         # Convert to grayscale
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         # Detect ArUco markers
-        corners, ids, rejected = detector.detectMarkers(gray)
+        corners, ids, _ = detector.detectMarkers(gray)
         
         # If markers are detected
         if ids is not None:
@@ -66,8 +82,9 @@ def detect_aruco_markers_with_distance():
             cv2.aruco.drawDetectedMarkers(frame, corners, ids)
             
             # Calculate distance for each marker
+            mean_tvec = np.zeros((3, 1))
+            mean_rvec = np.zeros((3, 1))
             for i, marker_id in enumerate(ids):
-                print(marker_id)
                 # Get the corners of the marker
                 marker_corners = corners[i][0]
                 
@@ -82,29 +99,19 @@ def detect_aruco_markers_with_distance():
                 marker_corners_float = marker_corners.astype(np.float32)
                 
                 # Use solvePnP to estimate pose
-                retval, rvec, tvec = cv2.solvePnP(
+                _, rvec, tvec = cv2.solvePnP(
                     objPoints, 
                     marker_corners_float, 
                     camera_matrix, 
                     dist_coeffs
                 )
+                mean_rvec += rvec
+                mean_tvec += tvec
 
-                print(tvec)
-                
-                # Display information on the frame
-                # cv2.putText(frame, f"ID: {marker_id[0]}", 
-                #             (center[0], center[1] - 40), 
-                #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                # cv2.putText(frame, f"Dist(PnP): {distance_pnp:.2f}m", 
-                #             (center[0], center[1] - 20), 
-                #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                # cv2.putText(frame, f"Dist(Simple): {distance_simple:.2f}m", 
-                #             (center[0], center[1]), 
-                #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                # cv2.circle(frame, center, 4, (0, 0, 255), -1)
-                
-                # # Print to console
-                # print(f"Marker ID: {marker_id[0]}, Distance(PnP): {distance_pnp:.3f}m, Distance(Simple): {distance_simple:.3f}m")
+            mean_tvec /= i + 1
+            mean_rvec /= i + 1
+            print(mean_tvec, mean_rvec)
+
         
         # Display the frame
         cv2.imshow('ArUco Marker Detection with Distance', frame)
@@ -114,18 +121,8 @@ def detect_aruco_markers_with_distance():
             break
     
     # Release resources
-    cap.release()
+    pipeline.stop()
     cv2.destroyAllWindows()
-
-def calibrate_camera():
-    """
-    Camera calibration function - for more accurate measurements,
-    you should calibrate your camera using a chessboard pattern
-    and replace the approximate camera_matrix values with calibrated ones.
-    
-    Example calibration code not shown here for brevity.
-    """
-    pass
 
 if __name__ == "__main__":
     detect_aruco_markers_with_distance()
