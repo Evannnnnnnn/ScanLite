@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import math
+import constant
 
 def detect_aruco_markers_with_distance():
     # Initialize the webcam
@@ -40,8 +41,8 @@ def detect_aruco_markers_with_distance():
     # Create the detector
     detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
     
-    # Marker size in meters (2.2 cm = 0.021 m)
-    marker_size = 0.021
+    # Marker size in meters (2.2 cm = 0.022 m)
+    marker_size = 0.022
     
     print("Press 'q' to quit")
     
@@ -57,7 +58,7 @@ def detect_aruco_markers_with_distance():
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         # Detect ArUco markers
-        corners, ids, _ = detector.detectMarkers(gray)
+        corners, ids, rejected = detector.detectMarkers(gray)
         
         # If markers are detected
         if ids is not None:
@@ -66,47 +67,44 @@ def detect_aruco_markers_with_distance():
             
             # Calculate distance for each marker
             for i, marker_id in enumerate(ids):
+                print(marker_id)
                 # Get the corners of the marker
                 marker_corners = corners[i][0]
-                print(marker_corners)
                 
                 # METHOD 1: Using solvePnP to get exact pose
                 # This requires camera calibration for accurate results
-                rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
-                    [marker_corners], marker_size, camera_matrix, dist_coeffs
+                
+                # Create 3D points of the marker corners in the marker coordinate system
+                # For a square marker of size marker_size, the corners are at:
+                objPoints = constant.marker_position[marker_id[0]]
+                
+                # Convert marker corners to the format needed by solvePnP
+                marker_corners_float = marker_corners.astype(np.float32)
+                
+                # Use solvePnP to estimate pose
+                retval, rvec, tvec = cv2.solvePnP(
+                    objPoints, 
+                    marker_corners_float, 
+                    camera_matrix, 
+                    dist_coeffs
                 )
-                
-                # # Distance is the Z component of the translation vector (in meters)
-                # distance_pnp = tvec[0][0][2]
-                
-                # METHOD 2: Using similar triangles (simpler but less accurate)
-                # Calculate the perimeter of the marker in pixels
-                perimeter = cv2.arcLength(marker_corners, True)
-                
-                # Calculate the side length in pixels (approximating as square)
-                side_length_pixels = perimeter / 4
-                
-                # Apply the distance formula: D = (F * W) / P
-                # Where F is focal length, W is actual marker width, P is perceived width in pixels
-                distance_simple = (focal_length * marker_size) / side_length_pixels
-                
-                # Get the center of the marker
-                center = (int(marker_corners[:, 0].mean()), int(marker_corners[:, 1].mean()))
+
+                print(tvec)
                 
                 # Display information on the frame
-                cv2.putText(frame, f"ID: {marker_id[0]}", 
-                            (center[0], center[1] - 40), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                # cv2.putText(frame, f"ID: {marker_id[0]}", 
+                #             (center[0], center[1] - 40), 
+                #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 # cv2.putText(frame, f"Dist(PnP): {distance_pnp:.2f}m", 
                 #             (center[0], center[1] - 20), 
                 #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                cv2.putText(frame, f"Dist(Simple): {distance_simple:.2f}m", 
-                            (center[0], center[1]), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                cv2.circle(frame, center, 4, (0, 0, 255), -1)
+                # cv2.putText(frame, f"Dist(Simple): {distance_simple:.2f}m", 
+                #             (center[0], center[1]), 
+                #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                # cv2.circle(frame, center, 4, (0, 0, 255), -1)
                 
-                # Print to console
-                print(f"Marker ID: {marker_id[0]}, Distance(Simple): {distance_simple:.3f}m")
+                # # Print to console
+                # print(f"Marker ID: {marker_id[0]}, Distance(PnP): {distance_pnp:.3f}m, Distance(Simple): {distance_simple:.3f}m")
         
         # Display the frame
         cv2.imshow('ArUco Marker Detection with Distance', frame)
