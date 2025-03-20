@@ -7,16 +7,19 @@ def find_and_fix_empty_point_cloud():
     print("Starting RealSense point cloud debugging...")
     
     # Initialize RealSense pipeline
-    try:
-        pipeline = rs.pipeline()
-        config = rs.config()
-        
-        # Enable both depth and color streams
-        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 60)
-        # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    except Exception as e:
-        print(e)
-        return
+    pipeline = rs.pipeline()
+    config = rs.config()
+    
+    # Enable both depth and color streams
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
+    pipeline = rs.pipeline()
+    config = rs.config()
+    
+    # Enable both depth and color streams
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 60)
+    # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
     
     # Start streaming (with error checking)
     try:
@@ -63,7 +66,6 @@ def find_and_fix_empty_point_cloud():
         # Keep visualization running
         print("\nPoint cloud visualization running. Press [ESC] in the window to close.")
 
-        frame_count = 0
         while True:  # Try for 100 frames
             # Capture frames
             start = time.time()
@@ -78,10 +80,13 @@ def find_and_fix_empty_point_cloud():
                 continue
             
             # Generate point cloud (with proper setup)
+
             points = pc.calculate(depth_frame)
 
+            
             # Get vertices and check
-            vertices = np.asarray(points.get_vertices()).view(np.float32).reshape(-1, 3)
+            vertices = np.asarray(points.get_vertices()).view(np.float32).reshape(-1, 3).astype(np.float64)
+                
             
             # Set points in Open3D point cloud
             pcd.points = o3d.utility.Vector3dVector(vertices)
@@ -93,11 +98,7 @@ def find_and_fix_empty_point_cloud():
             vis.update_geometry(pcd)
             vis.poll_events()
             vis.update_renderer()
-
-            # time.sleep(0.05)
-            # Short delay between frames
             
-            frame_count += 1
             
     except KeyboardInterrupt:
         print("Interrupted by user")
