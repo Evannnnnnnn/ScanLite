@@ -1,221 +1,297 @@
 import numpy as np
-import serial
-import time
-import math
+from scipy.linalg import block_diag
 
-class IMUKalmanFilter:
-    """
-    A Kalman filter implementation for IMU data that properly fuses
-    accelerometer and gyroscope measurements, including yaw estimation.
-    
-    State vector: [roll, pitch, yaw, roll_rate, pitch_rate, yaw_rate]
-    
-    Note: Since yaw cannot be derived from accelerometer, it will be 
-    estimated only from gyroscope integration and will drift over time.
-    """
-    def __init__(self, accel_noise=0.1, gyro_noise=0.01, process_noise=0.001):
-        # State vector [roll, pitch, yaw, roll_rate, pitch_rate, yaw_rate]
-        self.state = np.zeros((6, 1))
+class QuaternionEKF:
+    def __init__(self, process_noise_std, accel_noise_std, mag_noise_std, gyro_bias_std=0.01):
+        # State vector: [qw, qx, qy, qz, bias_x, bias_y, bias_z]
+        self.x = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # Initial state (identity quaternion, zero bias)
         
-        # Error covariance matrix - initial uncertainty
-        self.P = np.eye(6)
-        # Higher initial uncertainty for yaw since we can't measure it directly
-        self.P[2, 2] = 10.0
+        # State covariance matrix
+        self.P = np.eye(7) * 0.01
         
-        # State transition matrix (for constant angular velocity model)
-        self.F = np.eye(6)
-        # Will be updated with dt in predict step
+        # Process noise covariance
+        gyro_noise = process_noise_std**2 * np.eye(3)
+        bias_noise = gyro_bias_std**2 * np.eye(3)
+        self.Q = block_diag(np.zeros((4, 4)), gyro_noise, bias_noise)
         
-        # Process noise covariance matrix
-        self.Q = np.eye(6) * process_noise
-        # Higher process noise for yaw to reflect greater uncertainty
-        self.Q[2, 2] = process_noise * 5
+        # Measurement noise covariance
+        self.R_accel = accel_noise_std**2 * np.eye(3)
+        self.R_mag = mag_noise_std**2 * np.eye(3)
         
-        # Measurement matrix - maps state to measurements
-        # Note: We have 5 measurements (2 from accel, 3 from gyro) but 6 state variables
-        self.H = np.array([
-            [1, 0, 0, 0, 0, 0],  # accel_roll = roll
-            [0, 1, 0, 0, 0, 0],  # accel_pitch = pitch
-            [0, 0, 0, 1, 0, 0],  # gyro_roll_rate = roll_rate
-            [0, 0, 0, 0, 1, 0],  # gyro_pitch_rate = pitch_rate
-            [0, 0, 0, 0, 0, 1]   # gyro_yaw_rate = yaw_rate
+        # Gravity vector in world frame
+        self.gravity = np.array([0, 0, 1.0])  # Normalized gravity
+        
+        # Reference magnetic field in world frame (typical Northern hemisphere)
+        self.mag_ref = np.array([0.22, 0, 0.42])  # Normalize this for your location
+        
+        # Identity matrix for Kalman gain calculation
+        self.I = np.eye(7)
+
+    def normalize_quaternion(self):
+        """Normalize the quaternion part of the state vector"""
+        q_norm = np.linalg.norm(self.x[0:4])
+        if q_norm > 0:
+            self.x[0:4] = self.x[0:4] / q_norm
+
+    def quaternion_multiply(self, q1, q2):
+        """Quaternion multiplication"""
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        
+        return np.array([
+            w1*w2 - x1*x2 - y1*y2 - z1*z2,
+            w1*x2 + x1*w2 + y1*z2 - z1*y2,
+            w1*y2 - x1*z2 + y1*w2 + z1*x2,
+            w1*z2 + x1*y2 - y1*x2 + z1*w2
+        ])
+
+    def quaternion_conjugate(self, q):
+        """Return the conjugate of quaternion q"""
+        return np.array([q[0], -q[1], -q[2], -q[3]])
+
+    def quaternion_rotate_vector(self, q, v):
+        """Rotate vector v by quaternion q"""
+        q_v = np.array([0, v[0], v[1], v[2]])
+        q_conj = self.quaternion_conjugate(q)
+        
+        # q * q_v * q_conj
+        rotated = self.quaternion_multiply(
+            self.quaternion_multiply(q, q_v), 
+            q_conj
+        )
+        
+        return rotated[1:4]  # Return vector part
+
+    def predict(self, gyro, dt):
+        """
+        Prediction step of the Kalman filter
+        
+        Parameters:
+        -----------
+        gyro : array_like
+            Gyroscope measurements in rad/s (3 components)
+        dt : float
+            Time step in seconds
+        """
+        # Extract current quaternion and bias
+        q = self.x[0:4]
+        bias = self.x[4:7]
+        
+        # Correct gyroscope readings with estimated bias
+        gyro_corrected = gyro - bias
+        
+        # Calculate rotation vector (angular velocity * time)
+        theta_vec = gyro_corrected * dt
+        
+        # Calculate rotation angle
+        theta = np.linalg.norm(theta_vec)
+        
+        # Create rotation quaternion using exponential mapping
+        if theta < 1e-10:
+            # Small angle approximation
+            delta_q = np.array([1, theta_vec[0]/2, theta_vec[1]/2, theta_vec[2]/2])
+        else:
+            # Normalize axis
+            axis = theta_vec / theta
+            
+            # Calculate half angle
+            half_theta = theta * 0.5
+            
+            # Create quaternion
+            delta_q = np.array([
+                np.cos(half_theta),
+                axis[0] * np.sin(half_theta),
+                axis[1] * np.sin(half_theta),
+                axis[2] * np.sin(half_theta)
+            ])
+        
+        # Apply rotation: q_new = q ⊗ delta_q
+        q_new = self.quaternion_multiply(q, delta_q)
+        
+        # Bias is assumed constant (random walk model)
+        bias_new = bias
+        
+        # Update state vector
+        self.x[0:4] = q_new
+        self.x[4:7] = bias_new
+        
+        # Normalize quaternion
+        self.normalize_quaternion()
+        
+        # Compute Jacobian of the state transition function
+        F = self.compute_state_transition_jacobian(q, gyro_corrected, dt)
+        
+        # Update covariance matrix
+        self.P = F @ self.P @ F.T + self.Q
+        
+    def compute_state_transition_jacobian(self, q, gyro, dt):
+        """
+        Compute the Jacobian of the state transition function
+        
+        Parameters:
+        -----------
+        q : array_like
+            Current quaternion (4 components)
+        gyro : array_like
+            Bias-corrected gyroscope readings (3 components)
+        dt : float
+            Time step in seconds
+        
+        Returns:
+        --------
+        F : ndarray
+            State transition Jacobian matrix (7×7)
+        """
+        qw, qx, qy, qz = q
+        wx, wy, wz = gyro
+        
+        # Calculate rotation angle
+        theta = np.linalg.norm(gyro) * dt
+        
+        if theta < 1e-10:
+            # Small angle approximation for quaternion update
+            dq_dq = np.eye(4) + 0.5 * dt * np.array([
+                [0, -wx, -wy, -wz],
+                [wx, 0, wz, -wy],
+                [wy, -wz, 0, wx],
+                [wz, wy, -wx, 0]
+            ])
+        else:
+            # Use quaternion multiplication matrix of delta_q
+            axis = gyro / np.linalg.norm(gyro)
+            half_theta = theta * 0.5
+            sin_half = np.sin(half_theta)
+            cos_half = np.cos(half_theta)
+            
+            dq_w = cos_half
+            dq_x = axis[0] * sin_half
+            dq_y = axis[1] * sin_half
+            dq_z = axis[2] * sin_half
+            
+            dq_dq = np.array([
+                [dq_w, -dq_x, -dq_y, -dq_z],
+                [dq_x, dq_w, -dq_z, dq_y],
+                [dq_y, dq_z, dq_w, -dq_x],
+                [dq_z, -dq_y, dq_x, dq_w]
+            ])
+        
+        # Compute Jacobian with respect to gyro bias
+        G = -0.5 * dt * np.array([
+            [0, 0, 0],
+            [qw, -qz, qy],
+            [qz, qw, -qx],
+            [-qy, qx, qw]
         ])
         
-        # Measurement noise covariance matrix
-        self.R = np.diag([accel_noise, accel_noise, gyro_noise, gyro_noise, gyro_noise])
+        # Combine to form complete state transition Jacobian
+        F = np.zeros((7, 7))
+        F[0:4, 0:4] = dq_dq
+        F[0:4, 4:7] = G
+        F[4:7, 4:7] = np.eye(3)  # Bias transition (identity)
         
-        # Time tracking
-        self.dt = 0.01  # Default time step, will be updated
-        self.last_time = None
+        return F
     
-    def update_dt(self):
-        """Update the time step based on real elapsed time."""
-        current_time = time.time()
-        if self.last_time is not None:
-            self.dt = current_time - self.last_time
-        self.last_time = current_time
+    def update_with_accel(self, accel):
+        """
+        Update state using accelerometer measurements
         
-        # Update state transition matrix with new dt
-        self.F[0, 3] = self.dt  # roll += roll_rate * dt
-        self.F[1, 4] = self.dt  # pitch += pitch_rate * dt
-        self.F[2, 5] = self.dt  # yaw += yaw_rate * dt
-    
-    def predict(self):
-        """Prediction step of the Kalman filter."""
-        # Update time step
-        self.update_dt()
+        Parameters:
+        -----------
+        accel : array_like
+            Accelerometer measurements (3 components)
+        """
+        # Normalize accelerometer reading
+        accel_norm = np.linalg.norm(accel)
+        if accel_norm < 1e-10:
+            return  # Skip update if acceleration is too small
         
-        # Predict state
-        self.state = np.dot(self.F, self.state)
+        accel_normalized = accel / accel_norm
         
-        # Wrap yaw angle to [-π, π]
-        self.state[2, 0] = wrap_angle(self.state[2, 0])
+        # Current quaternion
+        q = self.x[0:4]
         
-        # Predict error covariance
-        self.P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
+        # Predicted gravity direction in body frame
+        expected_gravity = self.quaternion_rotate_vector(
+            self.quaternion_conjugate(q), 
+            self.gravity
+        )
         
-        return self.state
-    
-    def update(self, measurement):
-        """Update step of the Kalman filter using the measurement vector."""
-        # Calculate Kalman gain
-        S = np.dot(np.dot(self.H, self.P), self.H.T) + self.R
-        K = np.dot(np.dot(self.P, self.H.T), np.linalg.inv(S))
+        # Measurement residual (innovation)
+        y = accel_normalized - expected_gravity
         
-        # Update state with measurement
-        y = measurement - np.dot(self.H, self.state)  # Measurement residual
-        self.state = self.state + np.dot(K, y)
+        # Jacobian of measurement model
+        H = self.compute_accel_jacobian(q)
         
-        # Wrap yaw angle to [-π, π]
-        self.state[2, 0] = wrap_angle(self.state[2, 0])
+        # Kalman update
+        self._apply_update(y, H, self.R_accel)
+    
+    def _apply_update(self, y, H, R):
+        """
+        Apply Kalman update step
         
-        # Update error covariance
-        I = np.eye(self.state.shape[0])
-        self.P = np.dot(np.dot(I - np.dot(K, self.H), self.P), 
-                        (I - np.dot(K, self.H)).T) + np.dot(np.dot(K, self.R), K.T)
+        Parameters:
+        -----------
+        y : ndarray
+            Measurement residual (innovation)
+        H : ndarray
+            Measurement Jacobian
+        R : ndarray
+            Measurement noise covariance
+        """
+        # Innovation covariance
+        S = H @ self.P @ H.T + R
         
-        return self.state
-
-def wrap_angle(angle):
-    """Wrap angle to range [-π, π]"""
-    return ((angle + np.pi) % (2 * np.pi)) - np.pi
-
-def calculate_angles_from_accelerometer(acc_x, acc_y, acc_z):
-    """
-    Calculate roll and pitch angles from accelerometer data.
-    Roll is rotation around X-axis, pitch is rotation around Y-axis.
-    
-    Returns:
-        tuple: (roll, pitch) in radians
-    """
-    # Calculate roll (rotation around X-axis)
-    roll = math.atan2(acc_y, acc_z)
-    
-    # Calculate pitch (rotation around Y-axis)
-    pitch = math.atan2(-acc_x, math.sqrt(acc_y**2 + acc_z**2))
-    
-    return roll, pitch
-
-def process_imu_data(filter, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z):
-    """
-    Process IMU data using the Kalman filter.
-    
-    Args:
-        filter: The IMUKalmanFilter instance
-        acc_x, acc_y, acc_z: Accelerometer readings in g's
-        gyro_x, gyro_y, gyro_z: Gyroscope readings in radians/second
+        # Kalman gain
+        K = self.P @ H.T @ np.linalg.inv(S)
         
-    Returns:
-        tuple: (roll, pitch, yaw, roll_rate, pitch_rate, yaw_rate)
-    """
-    # First, predict the next state
-    filter.predict()
+        # State update
+        self.x = self.x + K @ y
+        
+        # Covariance update using Joseph form for better numerical stability
+        self.P = (self.I - K @ H) @ self.P @ (self.I - K @ H).T + K @ R @ K.T
+        
+        # Normalize quaternion part
+        self.normalize_quaternion()
     
-    # Calculate angles from accelerometer
-    accel_roll, accel_pitch = calculate_angles_from_accelerometer(acc_x, acc_y, acc_z)
-    
-    # Extract angular rates directly from gyroscope
-    # Note: Depending on your sensor's orientation, you might need to remap axes
-    gyro_roll_rate = gyro_x   # Roll rate around x-axis
-    gyro_pitch_rate = gyro_y  # Pitch rate around y-axis
-    gyro_yaw_rate = gyro_z    # Yaw rate around z-axis
-    
-    # Create measurement vector
-    # Note: We don't have a direct measurement for yaw
-    measurement = np.array([
-        [accel_roll], 
-        [accel_pitch], 
-        [gyro_roll_rate], 
-        [gyro_pitch_rate],
-        [gyro_yaw_rate]
-    ])
-    
-    # Update the filter with all measurements at once
-    updated_state = filter.update(measurement)
-    
-    # Extract values from updated state
-    roll = updated_state[0, 0]
-    pitch = updated_state[1, 0]
-    yaw = updated_state[2, 0]
-    roll_rate = updated_state[3, 0]
-    pitch_rate = updated_state[4, 0]
-    yaw_rate = updated_state[5, 0]
-    
-    return roll, pitch, yaw, roll_rate, pitch_rate, yaw_rate
-
-def read_imu_from_serial(port='/dev/ttyUSB0', baud_rate=115200):
-    """
-    Read IMU data from serial port and apply Kalman filter.
-    
-    This is a template - modify according to your actual serial data format.
-    """
-    # Initialize serial connection
-    ser = serial.Serial(port, baud_rate)
-    
-    # Initialize Kalman filter with appropriate noise parameters
-    # These values should be tuned based on your sensors' characteristics
-    kf = IMUKalmanFilter(
-        accel_noise=0.1,    # Accelerometer is relatively noisy
-        gyro_noise=0.01,    # Gyroscope is more precise but drifts
-        process_noise=0.001  # How quickly the state can change
-    )
-    
-    try:
-        while True:
-            # Read a line from serial port
-            line = ser.readline().decode('utf-8').strip()
+    def compute_accel_jacobian(self, q):
+        """
+        Compute Jacobian of accelerometer measurement model
+        
+        Parameters:
+        -----------
+        q : array_like
+            Current quaternion (4 components)
+        
+        Returns:
+        --------
+        H : ndarray
+            Measurement Jacobian (3×7)
+        """
+        qw, qx, qy, qz = q
+        
+        # Compute derivatives of rotated gravity vector with respect to quaternion
+        H_q = 2 * np.array([
+            # dg_x/dq
+            [qy*self.gravity[2] - qz*self.gravity[1],
+             qy*self.gravity[1] + qz*self.gravity[2],
+             qw*self.gravity[2] + qx*self.gravity[1],
+             -qw*self.gravity[1] + qx*self.gravity[2]],
             
-            # Parse the line - adjust this based on your data format
-            # Example format: "acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z"
-            try:
-                values = list(map(float, line.split(',')))
-                if len(values) >= 6:
-                    acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z = values[:6]
-                    
-                    # Apply Kalman filter
-                    roll, pitch, yaw, roll_rate, pitch_rate, yaw_rate = process_imu_data(
-                        kf, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z
-                    )
-                    
-                    # Convert from radians to degrees for display
-                    roll_deg = math.degrees(roll)
-                    pitch_deg = math.degrees(pitch)
-                    yaw_deg = math.degrees(yaw)
-                    
-                    print(f"Roll: {roll_deg:.2f}°, Pitch: {pitch_deg:.2f}°, Yaw: {yaw_deg:.2f}°")
-                    print(f"Rates: {math.degrees(roll_rate):.2f}°/s, "
-                          f"{math.degrees(pitch_rate):.2f}°/s, "
-                          f"{math.degrees(yaw_rate):.2f}°/s")
+            # dg_y/dq
+            [qz*self.gravity[0] - qx*self.gravity[2],
+             -qw*self.gravity[2] + qz*self.gravity[0],
+             qx*self.gravity[0] + qz*self.gravity[1],
+             qw*self.gravity[0] + qy*self.gravity[2]],
             
-            except ValueError as e:
-                print(f"Error parsing line: {e}")
-                continue
-                
-    except KeyboardInterrupt:
-        print("Stopping...")
-    finally:
-        ser.close()
-
-if __name__ == "__main__":
-    # Change port and baud rate to match your setup
-    read_imu_from_serial(port='/dev/tty.usbmodem101', baud_rate=9600)
+            # dg_z/dq
+            [qx*self.gravity[1] - qy*self.gravity[0],
+             qw*self.gravity[1] + qz*self.gravity[0],
+             -qw*self.gravity[0] + qz*self.gravity[1],
+             qx*self.gravity[0] + qy*self.gravity[1]]
+        ])
+        
+        # Complete Jacobian with zeros for bias part
+        H = np.zeros((3, 7))
+        H[:, 0:4] = H_q
+        
+        return H

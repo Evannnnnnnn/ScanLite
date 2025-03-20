@@ -2,3 +2,4 @@
 .vscode/
 __pycache__/
 aruco_markers_all.png
+.DS_store

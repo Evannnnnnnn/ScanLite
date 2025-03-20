@@ -305,5 +305,5 @@ class IMUVisualizer:
 if __name__ == "__main__":
     # Create and start the visualizer
     # Change port and baud rate to match your setup
-    visualizer = IMUVisualizer(port='/dev/tty.usbmodem2101', baud_rate=9600)
+    visualizer = IMUVisualizer(port='/dev/tty.usbmodem101', baud_rate=9600)
     visualizer.run()
