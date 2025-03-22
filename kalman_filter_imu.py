@@ -2,7 +2,7 @@ import numpy as np
 from scipy.linalg import block_diag
 
 class QuaternionEKF:
-    def __init__(self, process_noise_std, accel_noise_std, mag_noise_std, gyro_bias_std=0.01):
+    def __init__(self, process_noise_std, accel_noise_std, gyro_bias_std=0.01):
         # State vector: [qw, qx, qy, qz, bias_x, bias_y, bias_z]
         self.x = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # Initial state (identity quaternion, zero bias)
         
@@ -10,19 +10,15 @@ class QuaternionEKF:
         self.P = np.eye(7) * 0.01
         
         # Process noise covariance
-        gyro_noise = process_noise_std**2 * np.eye(3)
+        quaternion_noise = process_noise_std**2 * np.eye(4)  # Or zeros if not modeling quaternion process noise
         bias_noise = gyro_bias_std**2 * np.eye(3)
-        self.Q = block_diag(np.zeros((4, 4)), gyro_noise, bias_noise)
+        self.Q = block_diag(quaternion_noise, bias_noise) 
         
         # Measurement noise covariance
         self.R_accel = accel_noise_std**2 * np.eye(3)
-        self.R_mag = mag_noise_std**2 * np.eye(3)
         
         # Gravity vector in world frame
         self.gravity = np.array([0, 0, 1.0])  # Normalized gravity
-        
-        # Reference magnetic field in world frame (typical Northern hemisphere)
-        self.mag_ref = np.array([0.22, 0, 0.42])  # Normalize this for your location
         
         # Identity matrix for Kalman gain calculation
         self.I = np.eye(7)
@@ -248,7 +244,7 @@ class QuaternionEKF:
         self.x = self.x + K @ y
         
         # Covariance update using Joseph form for better numerical stability
-        self.P = (self.I - K @ H) @ self.P @ (self.I - K @ H).T + K @ R @ K.T
+        self.P = (self.I - K @ H) @ self.P
         
         # Normalize quaternion part
         self.normalize_quaternion()
@@ -272,22 +268,13 @@ class QuaternionEKF:
         # Compute derivatives of rotated gravity vector with respect to quaternion
         H_q = 2 * np.array([
             # dg_x/dq
-            [qy*self.gravity[2] - qz*self.gravity[1],
-             qy*self.gravity[1] + qz*self.gravity[2],
-             qw*self.gravity[2] + qx*self.gravity[1],
-             -qw*self.gravity[1] + qx*self.gravity[2]],
+            [qy, qz, qw, qx],
             
             # dg_y/dq
-            [qz*self.gravity[0] - qx*self.gravity[2],
-             -qw*self.gravity[2] + qz*self.gravity[0],
-             qx*self.gravity[0] + qz*self.gravity[1],
-             qw*self.gravity[0] + qy*self.gravity[2]],
+            [-qx, -qw, qz, qy],
             
             # dg_z/dq
-            [qx*self.gravity[1] - qy*self.gravity[0],
-             qw*self.gravity[1] + qz*self.gravity[0],
-             -qw*self.gravity[0] + qz*self.gravity[1],
-             qx*self.gravity[0] + qy*self.gravity[1]]
+            [qw, -qx, -qy, qz]
         ])
         
         # Complete Jacobian with zeros for bias part
