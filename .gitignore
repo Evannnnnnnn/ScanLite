@@ -3,3 +3,4 @@
 __pycache__/
 aruco_markers_all.png
 .DS_store
+mounting_plate.scad
